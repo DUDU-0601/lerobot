@@ -267,7 +267,7 @@ class LygionMotorsBus(SerialMotorsBus):
 
     def write_calibration(self, calibration_dict: dict[str, MotorCalibration], cache: bool = True) -> None:
         for motor, calibration in calibration_dict.items():
-            if motor !="shoulder_pan" and motor !="shoulder_lift" and motor !="elbow_flex":
+            if self._get_motor_model(motor) != "stepper":
                 if self.protocol_version == 0:
                     self.write("Homing_Offset", motor, calibration.homing_offset)
                 self.write("Min_Position_Limit", motor, calibration.range_min)

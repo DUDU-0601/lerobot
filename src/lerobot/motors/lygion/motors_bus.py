@@ -41,6 +41,7 @@ from lerobot.utils.utils import enter_pressed, move_cursor_up
 type NameOrID = str | int
 type Value = int | float
 
+ENCODER_ID_OFFSET = 50
 MOTOR_TYPE_SERVO = 0
 MOTOR_TYPE_STEPPER = 1 
 
@@ -625,8 +626,23 @@ class SerialMotorsBus(MotorsBusBase):
         self._disable_torque(initial_id, model)
 
         # Set ID
-        addr, length = get_address(self.model_ctrl_table, model, "ID")
-        self._write(addr, length, initial_id, target_id)
+        # addr, length = get_address(self.model_ctrl_table, model, "ID")
+        # self._write(addr, length, initial_id, target_id)
+
+        if self._id_to_model(target_id) == "stepper":
+            addr, length = get_address(self.model_ctrl_table, model, "ID")
+            self._write(addr, length, initial_id, target_id)
+            print(f"'{motor}' motor id set to {self.bus.motors[motor].id}")
+
+            input(f"Connect the controller board to the '{motor}' motor encoder only and press enter.")
+            addr, length = get_address(self.model_ctrl_table, model, "ID")
+            self._write(addr, length, initial_id, target_id + ENCODER_ID_OFFSET)
+            print(f"'{motor}' motor encoder id set to {self.bus.motors[motor].id + ENCODER_ID_OFFSET}")
+
+            # Set Baudrate
+            addr, length = get_address(self.model_ctrl_table, model, "Baud_Rate")
+            baudrate_value = self.model_baudrate_table[model][self.default_baudrate]
+            self._write(addr, length, target_id + ENCODER_ID_OFFSET, baudrate_value)
 
         # Set Baudrate
         addr, length = get_address(self.model_ctrl_table, model, "Baud_Rate")
@@ -889,15 +905,16 @@ class SerialMotorsBus(MotorsBusBase):
                 max_res = self.model_resolution_table[self._id_to_model(id_)] - 1
                 normalized_values[id_] = (val - mid) * 360 / max_res
             elif self.motors[motor].norm_mode is MotorNormMode.STEPPER:
-                max_res = self.model_resolution_table[self._id_to_model(id_)] - 1
+                max_res = 4096
                 if motor == "shoulder_pan":
-                    val = round((val - (SERVO_ONE_CIRCLE/2) + (SERVO_ONE_CIRCLE/2)) / SERVO_ONE_CIRCLE * (STEPPER_ONE_CIRCLE * RATIO))
+                    mid = max_res/2
+                    normalized_values[id_] = int(-((val - mid) * 360 / max_res))
                 elif motor == "shoulder_lift":
-                    val = round((val - (SERVO_ONE_CIRCLE/2) + (SERVO_ONE_CIRCLE/4)) / SERVO_ONE_CIRCLE * (STEPPER_ONE_CIRCLE * RATIO))
+                    mid = max_res/4
+                    normalized_values[id_] = int(-((val - mid) * 360 / max_res))
                 elif motor == "elbow_flex":
-                    val = round((val - (SERVO_ONE_CIRCLE/2) + (SERVO_ONE_CIRCLE/4)) / SERVO_ONE_CIRCLE * (STEPPER_ONE_CIRCLE * RATIO))
-                normalized_values[id_] = int(val)
-
+                    mid = max_res/4
+                    normalized_values[id_] = int(((val - mid) * 360 / max_res))
             else:
                 raise NotImplementedError
 
@@ -938,7 +955,6 @@ class SerialMotorsBus(MotorsBusBase):
                 elif motor == "elbow_flex":
                     mid = max_res/4
                     unnormalized_values[id_] = int((val * max_res / 360) + mid)
-                    # unnormalized_values[id_] = int((val * max_res / 360) + mid)
             else:
                 raise NotImplementedError
 
@@ -1158,6 +1174,67 @@ class SerialMotorsBus(MotorsBusBase):
             # raise RuntimeError(f"{err_msg} {self.packet_handler.getRxPacketError(error)}")
 
         return comm, error
+
+    @check_if_not_connected
+    def sync_read_stepper(
+        self,
+        data_name: str,
+        motors: NameOrID | Sequence[NameOrID] | None = None,
+        *,
+        normalize: bool = True,
+        num_retry: int = 0,
+    ) -> dict[str, Value]:
+        """Read the same register from several motors at once.
+
+        Args:
+            data_name (str): Register name.
+            motors (NameOrID | Sequence[NameOrID] | None, optional): Motors to query. `None` (default) reads every motor.
+            normalize (bool, optional): Normalisation flag.  Defaults to `True`.
+            num_retry (int, optional): Retry attempts.  Defaults to `0`.
+
+        Returns:
+            dict[str, Value]: Mapping *motor name → value*.
+        """
+
+        self._assert_protocol_is_compatible("sync_read")
+
+        names = self._get_motors_list(motors)
+        ids = [self.motors[motor].id for motor in names]
+        models = [self.motors[motor].model for motor in names]
+
+        if self._has_different_ctrl_tables:
+            assert_same_address(self.model_ctrl_table, models, data_name)
+
+        model = next(iter(models))
+        addr, length = get_address(self.model_ctrl_table, model, data_name)
+
+        err_msg = f"Failed to sync read '{data_name}' on {ids=} after {num_retry + 1} tries."
+        raw_ids_values, _ = self._sync_read(
+            addr, length, ids, num_retry=num_retry, raise_on_error=True, err_msg=err_msg
+        )
+        
+        decoded = self._decode_sign(data_name, raw_ids_values)
+
+        if normalize and data_name in self.normalized_data:
+            # normalized = self._normalize(decoded)
+
+            # return {self._id_to_name(id_): value for id_, value in normalized.items()}
+
+            normalized = {}
+            for id_, val in decoded.items():
+                motor = self._id_to_name(id_)
+                if self.motors[motor].norm_mode is MotorNormMode.STEPPER:
+                    max_res = self.model_resolution_table[self._id_to_model(id_)] - 1
+                    if motor == "shoulder_pan":
+                        val = round((val - (SERVO_ONE_CIRCLE/2) + (SERVO_ONE_CIRCLE/2)) / SERVO_ONE_CIRCLE * max_res)
+                    elif motor == "shoulder_lift":
+                        val = round((val - (SERVO_ONE_CIRCLE/2) + (SERVO_ONE_CIRCLE/4)) / SERVO_ONE_CIRCLE * max_res)
+                    elif motor == "elbow_flex":
+                        val = round((val - (SERVO_ONE_CIRCLE/2) + (SERVO_ONE_CIRCLE/4)) / SERVO_ONE_CIRCLE * max_res)
+                    normalized[id_] = int(val)
+            return {self._id_to_name(id_): value for id_, value in normalized.items()}
+        
+        return {self._id_to_name(id_): value for id_, value in decoded.items()}
 
     @check_if_not_connected
     def sync_read(

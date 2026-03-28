@@ -86,10 +86,10 @@ class AlohaMiniFollower(Robot):
         return self.bus.is_connected and all(cam.is_connected for cam in self.cameras.values())
 
     def stepper_init(self):
-        Present_Position = self.bus.sync_read("Present_Position")
-        self.bus.set_init_position(7, Present_Position['shoulder_pan'])
-        self.bus.set_init_position(8, Present_Position['shoulder_lift'])
-        self.bus.set_init_position(9, Present_Position['elbow_flex'])
+        Present_Position = self.bus.sync_read_stepper("Present_Position")
+        self.bus.set_init_position(self.bus.motors["shoulder_pan"].id, Present_Position['shoulder_pan'])
+        self.bus.set_init_position(self.bus.motors["shoulder_lift"].id, Present_Position['shoulder_lift'])
+        self.bus.set_init_position(self.bus.motors["elbow_flex"].id, Present_Position['elbow_flex'])
 
     @check_if_already_connected
     def connect(self, calibrate: bool = True) -> None:
